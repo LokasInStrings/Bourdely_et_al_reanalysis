@@ -1,0 +1,482 @@
+---
+title: "BOurdeley et al. bulk RNA seq"
+output: html_document
+---
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(GEOquery)
+library(stringr)
+library(EnhancedVolcano)
+library(biomaRt)
+library(dplyr)
+```
+```{r}
+gse<-getGEO(GEO='GSE151073', GSEMatrix=TRUE)
+data<-read_csv("GSE151073_PG_Bulk_Blood_raw_counts.csv.gz") #https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE151073
+```
+```{r}
+
+gse<-gse[[1]]
+metadata <-pData(phenoData(gse))
+
+```
+```{r}
+metadata1 <-dplyr::select(metadata,c(1,20,48,49,50))
+metadata2 <- metadata1 %>%
+  filter(title %in% c("DC3_1","DC3_2","DC3_3","DC3_4","DC2_CD5pos_1","DC2_CD5pos_2","DC2_CD5pos_3","DC2_CD5pos_4","DC2_TLR_1","DC2_TLR_3","DC2_TLR_4","DC3_TLR_1","DC3_TLR_3","DC3_TLR_4"))
+data2 <-dplyr::select(data,c(1,6,7,8,9,10,11,12,13,28,29,30,31,32,33))
+metadata3<-metadata2 %>% 
+  mutate(across(where(is.character), str_remove_all, pattern = fixed(" ")))
+metadata4<- metadata3 %>%
+  dplyr::rename("celltype"="cell type:ch1") %>%
+  dplyr::rename("description"="description.1")%>%
+  dplyr::rename("donor"="donor:ch1")%>%
+  dplyr::rename("tissue"="tissue:ch1")
+metadata5 <- metadata4
+vec <- c(rep("DC2_ctrl",4),rep("DC3_ctrl",4),rep("DC2_TLR",3), rep("DC3_TLR",3))
+
+vec2 <- c(rep("DC2",4),rep("DC3",4),rep("DC2",3), rep("DC3",3))
+
+vec3 <- c(rep("Ctrl",8),rep("TLR",6))
+          
+metadata6 <- cbind(metadata5,cell_group=vec,celltype2=vec2,stimulation=vec3)
+rownames(metadata6) <- metadata6$description
+data3 <- data2 %>%
+  rename("GeneID"="...1")
+```
+```{r}
+foo2 <- gsub("\\|.*", "", data3$GeneID)
+data4 <- data3%>%
+  mutate(GeneID=foo2)
+foo3 <-gsub("\\.[0-9]*$","",data4$GeneID)
+data5 <- data4 %>%
+  mutate(GeneID=foo3)
+```
+
+```{r}
+countdata <- data5 %>%
+  column_to_rownames("GeneID") %>%
+  as.matrix()
+```
+```{r}
+keep <- rowSums(countdata) > 5
+countdata <- countdata[keep,]
+```
+```{r}
+librarySizes <- colSums(countdata)
+bplot<-barplot(librarySizes, 
+        names=names(librarySizes), 
+        las=2, 
+        cex.names=0.5,
+        main="Barplot of library sizes")
+
+
+```
+#Problem?
+```{r}
+logcounts <- log2(countdata + 1)
+statusCol <- match(metadata6$cell_group, c("DC2_ctrl", "DC3_ctrl", "DC2_TLR", "DC3_TLR")) + 1
+boxplot(logcounts, 
+        xlab="", 
+        ylab="Log2(Counts)",
+        las=2,
+        col=statusCol)
+abline(h=median(as.matrix(logcounts)), col="blue")
+```
+
+```{r}
+library(ggfortify)
+
+rlogcounts <- rlog(countdata)
+pcDat <- prcomp(t(rlogcounts))
+autoplot(pcDat,
+         data = metadata6, 
+         colour="cell_group",
+         size=4)
+```
+```{r}
+design2 <- as.formula(~cell_group)
+modelMatrix <- model.matrix(design2, data = metadata6)
+modelMatrix
+```
+
+
+```{r}
+ddsObj.raw2 <- DESeqDataSetFromMatrix(countData = countdata,
+                                     colData = metadata6,
+                                     design = design2)
+```
+```{r}
+vstcounts2 <- vst(ddsObj.raw2, blind=TRUE)
+plotPCA(vstcounts2, intgroup=c("cell_group"))
+```
+
+
+```{r}
+ddsObj2 <- DESeq(ddsObj.raw2)
+res <- results(ddsObj2, alpha=0.05)
+head(res)
+```
+```{r}
+plotDispEsts(ddsObj2)
+```
+```{r}
+resultsNames(ddsObj2)
+```
+```{r}
+rDC3vDC2_c<-results(ddsObj2,
+                    name="cell_group_DC3_ctrl_vs_DC2_ctrl",
+                    alpha=0.05)
+rDC3vDC2_t<-results(ddsObj2,
+                    contrast=c("cell_group","DC3_TLR","DC2_TLR"),
+                    alpha=0.05)
+summary(rDC3vDC2_c)
+```
+
+```{r}
+summary(rDC3vDC2_t)
+```
+```{r}
+DESeq2::plotMA(rDC3vDC2_c)
+```
+```{r}
+DESeq2::plotMA(rDC3vDC2_t)
+```
+
+## For visualization, we gonna use fcshrink function of DESeq
+```{r}
+library(ashr)
+ddsShrink_c <- lfcShrink(ddsObj2, coef="cell_group_DC3_ctrl_vs_DC2_ctrl",type="ashr")
+ddsShrink_t <- lfcShrink(ddsObj2, contrast = c("cell_group","DC3_TLR","DC2_TLR"), res = rDC3vDC2_t,type="ashr")
+```
+
+```{r}
+Shrink_c<-as.data.frame(ddsShrink_c) %>%
+  rownames_to_column("GeneID")
+
+Shrink_c <- Shrink_c %>%
+  dplyr::rename(logFC=log2FoldChange, FDR=padj)
+
+
+Shrink_t<-as.data.frame(ddsShrink_t)%>%
+  rownames_to_column("GeneID")%>%
+  dplyr::rename(logFC=log2FoldChange, FDR=padj)
+
+summary(ddsShrink_c)
+summary(ddsShrink_t)
+```
+##Okay for later gsea stuff we need the entrezID and so on, so We have to get geneIDs from biomaRt
+```{r}
+Shrink_c <- Shrink_c %>%
+  mutate(ENS_ID=GeneID)
+Shrink_t <- Shrink_t %>%
+  mutate(ENS_ID=GeneID)
+
+```
+#lets get the IDs from biomaRt
+```{r}
+listEnsembl()
+ensembl <- useEnsembl("genes")
+datasets <-listDatasets(ensembl)
+ensembl.con <- useMart("ensembl", dataset="hsapiens_gene_ensembl",
+                       host="uswest.ensembl.org")
+attr <- listAttributes(ensembl.con)
+filterValues <- Shrink_c$ENS_ID
+filterValues2 <- Shrink_c$GeneID
+annot2 <- getBM(
+  attributes=c('ensembl_gene_id', 'entrezgene_id', 'external_gene_name',"entrezgene_accession"),
+  filters ="ensembl_gene_id",
+  values = filterValues,
+  mart=ensembl.con
+  )
+```
+#annotate
+```{r}
+annot2 <- annot2 %>%
+  dplyr::rename("ENS_ID"="ensembl_gene_id")
+##Fix the one to many relationship issue
+fixedDuplicates <- annot2 %>%  
+    add_count(ENS_ID) %>%  
+    filter(n>1) %>% 
+    dplyr::select(-n) %>% 
+    filter(entrezgene_accession==external_gene_name)
+annot3 <- annot2 %>%  
+    add_count(ENS_ID) %>%  
+    filter(n==1) %>% 
+    dplyr::select(-n) %>% 
+    bind_rows(fixedDuplicates)
+annotC <-Shrink_c%>% 
+    left_join(annot3, by="ENS_ID")
+annotT <- Shrink_t%>%
+  left_join(annot3,by="ENS_ID")
+```
+```{r}
+par(mfrow=c(1,2))
+hist(annotC$pvalue)
+hist(annotT$pvalue)
+```
+```{r}
+par(mfrow=c(1,2))
+ggplot(annotC, aes(x = log2(baseMean), y=logFC)) + 
+    geom_point(aes(colour=FDR < 0.05), shape=20, size=0.5)
+ggplot(annotT, aes(x = log2(baseMean), y=logFC)) + 
+    geom_point(aes(colour=FDR < 0.05), shape=20, size=0.5)
+```
+##Volcanoplots
+```{r Figure 2, fig.height=6, fig.width=8}
+annotT3 <- annotT %>%
+  na_if("")%>%
+  na.omit%>%
+  filter(baseMean>20)
+annotT4<- annotT %>%
+  na_if("")%>%
+  na.omit
+
+annotC3 <- annotC %>%
+  na_if("")%>%
+  na.omit%>%
+  filter(baseMean>20)
+annotC4<- annotC %>%
+  na_if("")%>%
+  na.omit
+keyvals <- ifelse(
+    annotT3$logFC < -1.5 & annotT3$FDR < 10e-2, 'red',
+      ifelse(annotT3$logFC > 1.5 &annotT3$FDR < 10e-2, 'purple',
+        'grey'))
+  keyvals[is.na(keyvals)] <- 'grey'
+  names(keyvals)[keyvals == 'red'] <- 'enriched in cDC2'
+  names(keyvals)[keyvals == 'grey'] <- "mid"
+  names(keyvals)[keyvals == 'purple'] <- 'enriched in DC3'
+EnhancedVolcano(annotT3,
+                lab = annotT3$external_gene_name,
+                title = 'DC3 versus cDC2 after TLR stimulation',
+                FCcutoff = 1.5,
+                pCutoff = 10e-2,
+                colCustom = keyvals,
+                ylab="-log10(FDR)",
+                selectLab=c("NLRP3","NLRP1","NLRC4","IL1B","IL18","GSDMD","CASP1","CASP4","CASP5","NLRP12", "MEFV","CD163","CD36","CASP8","NLRP6","PYCARD","FCGR1A","FCGR2B","CLEC10A"),
+                boxedLabels = TRUE,
+                labSize = 6.0,
+                labCol = 'black',
+                labFace = 'bold',
+                drawConnectors = TRUE,
+                colConnectors = 'black',
+                widthConnectors = 0.5,
+                x= 'logFC',
+                y ="FDR",
+                pointSize = 1
+                )
+```
+##Smething is wrong! It should be the exact other way around. But the model matrices are correct. What diid go wrong? Did they mislabel their data?
+
+```{r, Figure3, fig.height=6, fig.width=6}
+keyvals2 <- ifelse(
+    annotC3$logFC < -1.5 & annotC3$FDR < 10e-2, 'red',
+      ifelse(annotC3$logFC > 1.5 &annotC3$FDR < 10e-2, 'purple',
+        'grey'))
+  keyvals2[is.na(keyvals2)] <- 'grey'
+  names(keyvals2)[keyvals2 == 'red'] <- 'enriched in cDC2'
+  names(keyvals2)[keyvals2 == 'grey'] <- "mid"
+  names(keyvals2)[keyvals2 == 'purple'] <- 'enriched in DC3'
+EnhancedVolcano(annotC3,
+                lab = annotC3$external_gene_name,
+                title = 'DC3 versus cDC2 control',
+                FCcutoff = 1.5,
+                pCutoff = 10e-2,
+                x= 'logFC',
+                boxedLabels = TRUE,
+                colCustom = keyvals2,
+                labSize = 6.0,
+                labCol = 'black',
+                labFace = 'bold',
+                drawConnectors = TRUE,
+                colConnectors = 'black',
+                widthConnectors = 0.5,
+                y ="FDR")
+```
+#Heatmap
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+
+annotT3 <- annotT %>%
+  na_if("")%>%
+  na.omit%>%
+  filter(baseMean>20)
+annotT4<- annotT %>%
+  na_if("")%>%
+  na.omit
+
+annotC3 <- annotC %>%
+  na_if("")%>%
+  na.omit%>%
+  filter(baseMean>20)
+annotC4<- annotC %>%
+  na_if("")%>%
+  na.omit
+
+sigGenesT <- annotT %>% 
+    top_n(300, wt=-FDR) %>% 
+    pull("ENS_ID")
+sigGenesC <- annotC %>% 
+    top_n(300, wt=-FDR) %>% 
+    pull("ENS_ID")
+
+sigGenesT3 <- annotT3 %>%
+  top_n(150, wt=-FDR)
+sigGenesT3_pull<- sigGenesT3%>%
+  pull("ENS_ID")
+sigGenesT4 <- annotT4 %>%
+  top_n(150, wt=-FDR)
+sigGenesT4_pull<- sigGenesT4%>%
+  pull("ENS_ID")
+
+sigGenesC3 <- annotC3 %>%
+  top_n(150, wt=-FDR)
+sigGenesC3_pull<- sigGenesC3%>%
+  pull("GeneID")
+sigGenesC4 <- annotC4 %>%
+  top_n(150, wt=-FDR)
+sigGenesC4_pull<- sigGenesC4%>%
+  pull("GeneID")
+
+```
+
+
+
+
+
+```{r}
+plotDat_heat_T <- vst(ddsObj2)[sigGenesT3_pull,] %>% 
+    assay()
+rownames(plotDat_heat_T) <- sigGenesT3$external_gene_name
+
+z.mat_T <- t(scale(t(plotDat_heat_T), center=TRUE, scale=TRUE))
+plotDat_heat_C <- vst(ddsObj2)[sigGenesC3_pull,] %>% 
+    assay()
+rownames(plotDat_heat_C) <- sigGenesC3$external_gene_name
+z.mat_C <- t(scale(t(plotDat_heat_C), center=TRUE, scale=TRUE))
+
+```
+
+```{r Figure4, fig.height=6, fig.width=5}
+library(grid)
+myPalette <- c("blue3", "ivory", "red3")
+myRamp = colorRamp2(c(-2, 0, 2), myPalette)
+hcDatT <- hclust(dist(z.mat_T))
+cutGroups <- cutree(hcDatT, h=4)
+
+ha1 = HeatmapAnnotation(df = colData(ddsObj2)[,c("cell_group")])
+htT<-Heatmap(z.mat_T, name = "z-score",
+        col = myRamp,            
+        show_row_names = TRUE,
+        cluster_columns = TRUE,
+        cluster_rows = TRUE,
+        row_names_gp = grid::gpar(fontsize = 2),
+        split=cutGroups,
+        show_column_names = TRUE,
+        rect_gp = gpar(col = "darkgrey", lwd=0.5),
+        top_annotation = ha1)
+htT[,9:14]
+#column_labels = c(rep("",8),"DC2_d4","DC2_d1","DC2_d3","DC3_d4","DC3_d3","DC3_d1")
+```
+```{r Figure5, fig.height=6, fig.width=5}
+hcDatC <- hclust(dist(z.mat_C))
+cutGroups <- cutree(hcDatC, h=4)
+
+ha1 = HeatmapAnnotation(df = colData(ddsObj2)[,c("cell_group")])
+htC<-Heatmap(z.mat_C, name = "z-score",
+        col = myRamp,            
+        show_row_names = TRUE,
+        row_labels = sigGenesT3$external_gene_name,
+        row_names_gp = grid::gpar(fontsize = 2),
+        cluster_columns = TRUE,
+        split=cutGroups,
+        show_column_names = TRUE,
+        rect_gp = gpar(col = "darkgrey", lwd=0.5),
+        top_annotation = ha1)
+htC[,1:8]
+#column_labels = c("DC3_d4","DC3_d3","DC3_d2","DC3_d1","DC2_d1","DC2_d3","DC2_d4","DC2_d2",rep("",6)),
+```
+#Heatmap with specific genes
+```{r Figure6, fig.height=3, fig.width=3}
+spGenes<- c("ENSG00000125538","ENSG00000150782","ENSG00000104518","ENSG00000103490","ENSG00000091592","ENSG00000162711","ENSG00000091106","ENSG00000174885","ENSG00000142405","ENSG00000103313","ENSG00000137752","ENSG00000196954","ENSG00000137757","ENSG00000151414", "ENSG00000137265", "ENSG00000140968")
+rowlabels <- c("IL1B","IL18","GSDMD","PYCARD","NLRP1","NLRP3","NLRC4","NLRP6","NLRP12","MEFV","CASP1","CASP4","CASP5","NEK7", "IRF4", "IRF8")
+plotDat_heat_TS <- vst(ddsObj2)[spGenes,] %>% 
+    assay()
+rownames(plotDat_heat_TS) <- rowlabels
+z.mat_TS <- t(scale(t(plotDat_heat_TS), center=TRUE, scale=TRUE))
+hcDatTS <- hclust(dist(z.mat_TS))
+cutGroupsS <- cutree(hcDatTS, h=4)
+
+htTS<-Heatmap(z.mat_TS, name = "z-score",
+        col = myRamp,
+        row_labels = rowlabels,
+        show_row_names = TRUE,
+        cluster_columns = FALSE,
+        split=cutGroupsS,
+        rect_gp = gpar(col = "darkgrey", lwd=0.5),
+        top_annotation = ha1)
+htTS#[,9:14]
+```
+
+
+```{r}
+hyperGenes<-c("ENSG00000125538","ENSG00000137752","ENSG00000104518","ENSG00000004139","ENSG00000131165","ENSG00000255112","ENSG00000130724","ENSG00000083937","ENSG00000115561", "ENSG00000254505","ENSG00000101421","ENSG00000086065","ENSG00000176108","ENSG00000147457")
+rowlabels2 <- c("IL1B","CASP1","GSDMD","SARM","CHMP1A","CHMP1B","CHMP2A","CHMP2B","CHMP3","CHMP4A","CHMP4B","CHMP5","CHMP6","CHMP7")
+plotDat_heat_T_hyper <- vst(ddsObj2)[hyperGenes,] %>% 
+    assay()
+rownames(plotDat_heat_T_hyper) <- rowlabels2
+z.mat_T_hyper <- t(scale(t(plotDat_heat_T_hyper), center=TRUE, scale=TRUE))
+hcDatT_hyper <- hclust(dist(z.mat_T_hyper))
+cutGroups_hyper <- cutree(hcDatT_hyper, k=4)
+
+htT_hyper<-Heatmap(z.mat_T_hyper, name = "z-score",
+        col = myRamp,
+        row_labels = rowlabels2,
+        show_row_names = TRUE,
+        cluster_columns = FALSE,
+        split=cutGroups_hyper,
+        rect_gp = gpar(col = "darkgrey", lwd=0.5),
+        top_annotation = ha1)
+htT_hyper[,9:14]
+```
+```{r}
+htT_hyper[,1:14]
+```
+```{r}
+markerGenes<-c("ENSG00000110448","ENSG00000135218","ENSG00000177575","ENSG00000170458","ENSG00000150337","ENSG00000158481","ENSG00000125538","ENSG00000115008","ENSG00000163220","ENSG00000163221","ENSG00000114013","ENSG00000019582","ENSG00000179583")
+rowlabels3 <- c("CD5","CD36","CD163","CD14","FCGR1A","CD1C","IL1B","IL1A","S100A9","S100A12","CD86","CD74","CIITA")
+plotDat_heat_marker <- vst(ddsObj2)[markerGenes,] %>% 
+    assay()
+rownames(plotDat_heat_marker) <- rowlabels3
+z.mat_marker <- t(scale(t(plotDat_heat_marker), center=TRUE, scale=TRUE))
+hcDat_marker <- hclust(dist(z.mat_marker))
+cutGroups_marker <- cutree(hcDat_marker, h=4)
+
+htT_marker<-Heatmap(z.mat_marker, name = "z-score",
+        col = myRamp,
+        row_labels = rowlabels3,
+        show_row_names = TRUE,
+        cluster_columns = FALSE,
+        split=cutGroups_marker,
+        rect_gp = gpar(col = "darkgrey", lwd=0.5),
+        top_annotation = ha1)
+htT_marker[,9:14]
+```
+```{r}
+htT_marker[,1:14]
+```
+
+```{r}
+install.packages("pheatmap")
+library(pheatmap)
+pheatmap(z.mat_T,main = "pheatmap default")
+
+
+```
+
+
+
+
