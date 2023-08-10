@@ -1,0 +1,50 @@
+---
+title: "GSEA"
+output: html_document
+---
+
+```{r}
+library(clusterProfiler)
+library(msigdbr)
+
+rankedGenes <- annotT4 %>%
+  drop_na(entrezgene_id) %>%
+  mutate(rank = logFC) %>%
+  arrange(desc(rank)) %>%
+  pull(rank,entrezgene_id)
+
+term2gene <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  select(gs_name, entrez_gene)
+term2name <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  select(gs_name, gs_description) %>% 
+  distinct()
+gseaRes <- GSEA(rankedGenes,
+                TERM2GENE = term2gene,
+                TERM2NAME = term2name,
+                pvalueCutoff = 1.00, 
+                minGSSize = 15,
+                maxGSSize = 1000)
+```
+
+```{r}
+res_GSEA<-as_tibble(gseaRes) %>%
+  arrange(desc(abs(NES))) %>% 
+  top_n(15, wt=-p.adjust) %>% 
+  select(-core_enrichment) %>%
+  mutate(across(c("enrichmentScore", "NES"), round, digits=3)) %>% 
+  mutate(across(c("pvalue", "p.adjust", "qvalues"), scales::scientific))
+```
+
+```{r, fig.width=4, fig.height=5}
+library(enrichplot)
+enrichplot::dotplot(gseaRes, showCategory=15, font.size=10, label_format = 60) + ggtitle("dotplot for GSEA")
+ggsave("GSEA.pdf", plot = last_plot(), width=27, height =30, units= "cm")
+```
+
+```{r, fig.width=15, fig.height=12}
+##Maybe this makes more sense with GO/KEGG
+edox <- setReadable(gseaRes, 'org.Hs.eg.db', 'ENTREZID')
+p1 <- cnetplot(edox,categorySize="pvalue", showCategory = 5) 
+p1
+```
+
